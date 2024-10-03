@@ -247,8 +247,15 @@ def removeHeaderFooter(doc: pdf.Document, pageCount=15) -> pdf.Document:
 def extractText(doc: pdf.Document) -> str:
     # initialise list of all blocks containing text
     blockList = []
+
+    # initiaise list of word counts for each page
+    pagesWords = []
+
     # move through doc page by page
     for page in doc:
+        # initialise a counter to count words on the page
+        PageWordCount = 0
+
         # get page contents
         pageDict = page.get_text("dict")
         # we're only interested in blocks that have text
@@ -352,13 +359,28 @@ def extractText(doc: pdf.Document) -> str:
                                                     b[2],
                                                     b[3]))
             )
+            
+            # count the words on a single page 
+            words = page.get_text("words",clip=rect)
+            for i in range(len(words)):
+                PageWordCount += 1
+
+        # save word count for later use
+        pagesWords.append(PageWordCount)
+    
+    outString = ""
+    # add cumulative word count after each page to the start of the outputstring
+    cumulativePageWords = 0
+    for count in pagesWords:
+        cumulativePageWords = cumulativePageWords + count
+        outString = outString + str(cumulativePageWords) + ' '
 
     # convert list of text from blocks into a single string
-    outString = '\n'.join(blockList)
+    outString = outString + '\n'.join(blockList)
 
     # remove extra spaces and non space characters
     outString = re.sub(r"[\s\a\u2003]+", r" ", outString)
-
+    
     # write to file
     return outString
 
@@ -379,40 +401,45 @@ def process(path: str) -> dict[str, dict, set]:
         # remove all headers and footers
         outDoc = removeHeaderFooter(inDoc)
         # extract the text
-        text = extractText(outDoc)
-        # check length of text
-        texts = []
-        while (len(text) >= 1000000):
-            # get split location
-            i = 90000
-            try:
-                # check for next new sentence
-                # . followed by space followed by upper case
-                while (text[i] != ' ' and text[i-1] != '.'
-                       and text[i+1].upper() != text[i+1]
-                       and i < 100000):
-                    i += 1
-            except IndexError:
-                # no new sentences in at least 10000 chars,
-                # just split at 90000
-                i = 90000
-            texts.append(text[:i])
-            text = text[i:]
-        texts.append(text)
+        temptext = extractText(outDoc).split()
+        text = ""
+        # take out the page counts
+        pageCounts = []
+        startText = 0
+        for word in temptext:
+            if word.isdigit() and startText == 0:
+                pageCounts.append(int(word))
+            else:
+                startText = 1
+                text = text + word + ' '
 
         # do spacy processing
         nlp = spacy.load("en_LRVSP_spacy")
-        links = set()
-        for t in texts:
-            doc = nlp(t)
-            links.update({ent.text.removeprefix("the ") for ent in doc.ents
-                          if ent.label_ == "ref_doc"
-                          and 4*math.ceil((len(ent.text)/3)) < 255})
+        doc = nlp(text)
+        links = {ent.text.removeprefix("the ") for ent in doc.ents
+                 if ent.label_ == "ref_doc"
+                 and 4*math.ceil((len(ent.text)/3)) < 255}
+
+        # find the position of the links
+        pageNumbers = []
+        currentPageNumber = 1
+        for linkent in links:    
+            index = text.find(linkent)
+            wordCount = len(text[:index].split())
+            # convert link index to a page number
+            for pageWordCount in pageCounts:
+                if wordCount >= pageWordCount:
+                    currentPageNumber += 1
+                else:    
+                    break
+            pageNumbers.append(currentPageNumber)
+            currentPageNumber = 1
 
         retDict = {
             "name": fileName,
             "metadata": dict(),
-            "links": links
+            "links": links,
+            "pageNumbers": pageNumbers
         }
 
         return retDict
